@@ -28,8 +28,6 @@ class Table:
     def open(cls, path, name):
         if not os.path.exists(path):
             raise SchemaError(f"Таблица {name!r} не найдена")
-        # размер записи зависит от схемы, а схема лежит в заголовке,
-        # поэтому сначала читаем заголовок «вручную», потом создаём Storage
         with open(path, "rb") as f:
             raw = f.read(HEADER_SIZE)
         schema, next_id = Schema.from_bytes(raw)
@@ -41,16 +39,16 @@ class Table:
 
     # ---------- INSERT ----------
     def insert(self, row):
-        row = dict(row)                       # не портим словарь вызывающего
+        row = dict(row)
         s = self.schema
 
         unknown = set(row) - set(s.by_name)
         if unknown:
             raise ValidationError(f"Неизвестные столбцы: {sorted(unknown)}")
 
-        if row.get(s.pk) is None:             # авто-ID
+        if row.get(s.pk) is None:      
             row[s.pk] = self.next_id
-        else:                                 # PK задан вручную: проверяем дубликат
+        else:              
             if any(r[s.pk] == row[s.pk] for _, r in self.scan()):
                 raise IntegrityError(
                     f"Дубликат PRIMARY KEY: {s.pk}={row[s.pk]!r} уже есть")
@@ -59,8 +57,7 @@ class Table:
         if missing:
             raise ValidationError(f"Не указаны столбцы: {missing}")
 
-        data = s.row_to_bytes(row)            # упадёт здесь, если тип не тот,
-                                              # а в файл ещё ничего не записано
+        data = s.row_to_bytes(row)         
         self.storage.append(data)
 
         pk_value = row[s.pk]
@@ -69,7 +66,6 @@ class Table:
             self._save_header()
         return pk_value
 
-    # ---------- чтение (для проверки, полноценный SELECT будет на этапе 3) ----------
     def scan(self):
         """Генератор: (номер записи, словарь) для всех живых записей."""
         for n in range(self.storage.count()):

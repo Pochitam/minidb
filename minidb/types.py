@@ -17,6 +17,12 @@ class IntType():
     
     def unpack(self, raw):
         return struct.unpack("<q", raw)[0]
+    
+    def parse(self, text):
+        try:
+            return int(text)
+        except (ValueError, TypeError):
+            raise ValidationError(f"Не удалось прочитать {text!r} как INT")
 
 class FloatType():
     name="FLOAT"
@@ -33,7 +39,14 @@ class FloatType():
     def unpack(self, raw):
         return struct.unpack("<d", raw)[0]
 
-class StrType():
+    def parse(self, text):
+        try:
+            return float(text)
+        except (ValueError, TypeError):
+            raise ValidationError(f"Не удалось прочитать {text!r} как FLOAT")
+
+
+class StringType():
     name = "STRING"
     def __init__(self, size=64):
         self.size = size
@@ -50,3 +63,17 @@ class StrType():
 
     def unpack(self,raw):
         return raw.rstrip(b"\x00").decode("utf-8")
+    
+    def parse(self, text):
+        return str(text)
+
+def make_type(name, length=None):
+    """Создаёт тип по имени: make_type('STRING', 32)."""
+    name = name.upper()
+    if name == "INT":
+        return IntType()
+    if name == "FLOAT":
+        return FloatType()
+    if name == "STRING":
+        return StringType(length or 64)
+    raise ValidationError(f"Неизвестный тип: {name}")
