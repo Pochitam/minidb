@@ -1,6 +1,6 @@
 import os
 import re
-from .errors import SchemaError
+from .errors import MiniDBError, SchemaError, StorageError
 from .table import Table
 
 EXT = ".tbl"
@@ -9,13 +9,22 @@ NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 class Database:
     def __init__(self, folder):
+        if os.path.exists(folder) and not os.path.isdir(folder):
+            raise StorageError(f"{folder!r} не папка")
         self.folder = folder
         os.makedirs(folder, exist_ok=True)
         self.tables = {}
-        for fname in sorted(os.listdir(folder)):
-            if fname.endswith(EXT):
-                name = fname[:-len(EXT)]
-                self.tables[name] = Table.open(self._path(name), name)
+        try:
+            for fname in sorted(os.listdir(folder)):
+                if fname.endswith(EXT):
+                    name = fname[:-len(EXT)]
+                    try:
+                        self.tables[name] = Table.open(self._path(name), name)
+                    except MiniDBError as e:
+                        raise StorageError(f"Файл {fname}: {e}") from e
+        except Exception:
+            self.close()
+            raise
 
     def _path(self, name):
         return os.path.join(self.folder, name + EXT)

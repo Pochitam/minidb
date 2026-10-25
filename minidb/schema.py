@@ -1,3 +1,4 @@
+import re
 import struct
 from .errors import SchemaError, StorageError, ValidationError
 from .types import make_type
@@ -5,13 +6,14 @@ from .types import make_type
 MAGIC = b"MDB1"
 HEADER_SIZE = 1024
 NAME_LEN = 32
+NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 TYPE_CODES = {"INT": 1, "FLOAT": 2, "STRING": 3}
 CODE_TYPES = {v: k for k, v in TYPE_CODES.items()}
 
-_HEAD = struct.Struct("<4sQBB")     # magic, next_id, число столбцов, индекс PK
-_COL = struct.Struct("<32sBH")      # имя, код типа, длина строки
+_HEAD = struct.Struct("<4sQBB")
+_COL = struct.Struct("<32sBH")   
 _FLAG = struct.Struct("<?")
-MAX_COLUMNS = (HEADER_SIZE - _HEAD.size) // _COL.size    # 28
+MAX_COLUMNS = (HEADER_SIZE - _HEAD.size) // _COL.size
 
 
 class Column:
@@ -22,8 +24,14 @@ class Column:
 
 def column_from_spec(spec):
     """("size", "INT") или ("name", "STRING", 64) -> Column."""
-    name, type_name, *rest = spec
-    return Column(name, make_type(type_name, rest[0] if rest else None))
+    try:
+        name, type_name, *rest = spec
+    except (TypeError, ValueError):
+        raise SchemaError(f"Плохое описание столбца: {spec!r}")
+    try:
+        return Column(name, make_type(type_name, rest[0] if rest else None))
+    except ValidationError as e:
+        raise SchemaError(f"Столбец {name!r}: {e}")
 
 
 class Schema:
@@ -33,11 +41,13 @@ class Schema:
         if len(columns) > MAX_COLUMNS:
             raise SchemaError(f"Не больше {MAX_COLUMNS} столбцов")
         names = [c.name for c in columns]
+        for n in names:
+            if (not isinstance(n, str) or not NAME_RE.match(n)
+                    or len(n.encode("utf-8")) > NAME_LEN):
+                raise SchemaError(
+                    f"Плохое имя столбца {n!r}: буквы, цифры, _, не с цифры, до {NAME_LEN} символов")
         if len(set(names)) != len(names):
             raise SchemaError("Имена столбцов повторяются")
-        for n in names:
-            if not n or len(n.encode("utf-8")) > NAME_LEN:
-                raise SchemaError(f"Плохое имя столбца: {n!r}")
         if pk not in names:
             raise SchemaError(f"PRIMARY KEY {pk!r} не найден среди столбцов")
 
@@ -50,11 +60,11 @@ class Schema:
         self.by_name = {c.name: c for c in columns}
         self.record_size = _FLAG.size + sum(c.type.size for c in columns)
 
-    # ---------- строка таблицы <-> байты ----------
+    # строка таблицы <-> байты
     def row_to_bytes(self, row, alive=True):
         parts = [_FLAG.pack(alive)]
         for c in self.columns:
-            parts.append(c.type.pack(row[c.name]))   # здесь срабатывает validate
+            parts.append(c.type.pack(row[c.name])) 
         return b"".join(parts)
 
     def bytes_to_row(self, raw):
@@ -65,7 +75,7 @@ class Schema:
             pos += c.type.size
         return alive, row
 
-    # ---------- схема <-> байты заголовка ----------
+    # схема <-> байты заголовка
     def to_bytes(self, next_id):
         out = [_HEAD.pack(MAGIC, next_id, len(self.columns), self.pk_index)]
         for c in self.columns:
@@ -76,16 +86,27 @@ class Schema:
 
     @classmethod
     def from_bytes(cls, raw):
-        """Возвращает (schema, next_id)."""
+        """Возвращает (schema, next_id). Любая порча заголовка -> StorageError."""
         if len(raw) < _HEAD.size:
             raise StorageError("Заголовок слишком короткий")
         magic, next_id, ncols, pk_index = _HEAD.unpack_from(raw, 0)
         if magic != MAGIC:
             raise StorageError("Это не файл MiniDB (неверная сигнатура)")
+        if not 1 <= ncols <= MAX_COLUMNS or pk_index >= ncols:
+            raise StorageError("Заголовок повреждён: неверное число столбцов или PK")
+
         columns, pos = [], _HEAD.size
         for _ in range(ncols):
             name, code, length = _COL.unpack_from(raw, pos)
             pos += _COL.size
-            name = name.rstrip(b"\x00").decode("utf-8")
-            columns.append(Column(name, make_type(CODE_TYPES[code], length or None)))
-        return cls(columns, columns[pk_index].name), next_id
+            if code not in CODE_TYPES:
+                raise StorageError(f"Заголовок повреждён: неизвестный код типа {code}")
+            try:
+                name = name.rstrip(b"\x00").decode("utf-8")
+                columns.append(Column(name, make_type(CODE_TYPES[code], length or None)))
+            except (UnicodeDecodeError, ValidationError) as e:
+                raise StorageError(f"Заголовок повреждён: {e}")
+        try:
+            return cls(columns, columns[pk_index].name), next_id
+        except SchemaError as e:
+            raise StorageError(f"Заголовок повреждён: {e}")

@@ -40,31 +40,37 @@ class Table:
 
     # INSERT
     def insert(self, row):
-        row = dict(row)
+        if not isinstance(row, dict):
+            raise ValidationError(f"Строка должна быть словарём, получено {row!r}")
+        row = dict(row)                       # не портим словарь вызывающего
         s = self.schema
 
         unknown = set(row) - set(s.by_name)
         if unknown:
             raise ValidationError(f"Неизвестные столбцы: {sorted(unknown)}")
 
-        if row.get(s.pk) is None:         
-            row[s.pk] = self.next_id
-        else:                       
-            if any(r[s.pk] == row[s.pk] for _, r in self.scan()):
-                raise IntegrityError(
-                    f"Дубликат PRIMARY KEY: {s.pk}={row[s.pk]!r} уже есть")
+        auto = row.get(s.pk) is None
+        if auto:
+            row[s.pk] = self.next_id          # авто-ID
 
         missing = [c.name for c in s.columns if c.name not in row]
         if missing:
             raise ValidationError(f"Не указаны столбцы: {missing}")
 
-        data = s.row_to_bytes(row)  
-        self.storage.append(data)
+        data = s.row_to_bytes(row)            # проверка типов всех полей, файл не тронут
 
         pk_value = row[s.pk]
+        if pk_value < 1:
+            raise ValidationError(f"{s.pk} должен быть положительным, получено {pk_value}")
+        if not auto and any(r[s.pk] == pk_value for _, r in self.scan()):
+            raise IntegrityError(f"Дубликат PRIMARY KEY: {s.pk}={pk_value!r} уже есть")
+
+        # сначала счётчик, потом запись: при сбое между ними id лишь пропадёт,
+        # а не выдастся повторно
         if pk_value >= self.next_id:
             self.next_id = pk_value + 1
             self._save_header()
+        self.storage.append(data)
         return pk_value
 
     # чтение всех живых записей

@@ -15,7 +15,11 @@ class Storage:
             self.file.write(b"\x00" * header_size)
             self.file.flush()
         else:
-            self._check_file()
+            try:
+                self._check_file()
+            except StorageError:
+                self.file.close()  
+                raise
 
     def _check_file(self):
         size = os.fstat(self.file.fileno()).st_size
