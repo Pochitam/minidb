@@ -12,13 +12,13 @@ class Table:
         self.schema = schema
         self.next_id = next_id
 
-    # CREATE TABLE
     @classmethod
-    def create(cls, path, name, columns, pk):
-        """columns: [("id","INT"), ("name","STRING",64), ...]"""
+    def create(cls, path, name, columns, pk, fks=None):
+        """columns: [("id","INT"), ("name","STRING",64), ...]
+        fks: [("dataset_id", "datasets", "id"), ...]"""
         if os.path.exists(path):
             raise SchemaError(f"Таблица {name!r} уже существует")
-        schema = Schema([column_from_spec(c) for c in columns], pk)
+        schema = Schema([column_from_spec(c) for c in columns], pk, fks)
         storage = Storage(path, schema.record_size, HEADER_SIZE)
         table = cls(name, storage, schema, next_id=1)
         table._save_header()
@@ -38,7 +38,6 @@ class Table:
     def _save_header(self):
         self.storage.write_header(self.schema.to_bytes(self.next_id))
 
-    # INSERT
     def insert(self, row):
         if not isinstance(row, dict):
             raise ValidationError(f"Строка должна быть словарём, получено {row!r}")
@@ -51,13 +50,13 @@ class Table:
 
         auto = row.get(s.pk) is None
         if auto:
-            row[s.pk] = self.next_id          # авто-ID
+            row[s.pk] = self.next_id         
 
         missing = [c.name for c in s.columns if c.name not in row]
         if missing:
             raise ValidationError(f"Не указаны столбцы: {missing}")
 
-        data = s.row_to_bytes(row)            # проверка типов всех полей, файл не тронут
+        data = s.row_to_bytes(row)      
 
         pk_value = row[s.pk]
         if pk_value < 1:
@@ -65,15 +64,12 @@ class Table:
         if not auto and any(r[s.pk] == pk_value for _, r in self.scan()):
             raise IntegrityError(f"Дубликат PRIMARY KEY: {s.pk}={pk_value!r} уже есть")
 
-        # сначала счётчик, потом запись: при сбое между ними id лишь пропадёт,
-        # а не выдастся повторно
         if pk_value >= self.next_id:
             self.next_id = pk_value + 1
             self._save_header()
         self.storage.append(data)
         return pk_value
 
-    # чтение всех живых записей
     def scan(self):
         """Генератор: (номер записи, словарь) для всех живых записей."""
         for n in range(self.storage.count()):
@@ -81,6 +77,9 @@ class Table:
             if alive:
                 yield n, row
 
+    def exists(self, pk_value):
+        pk = self.schema.pk
+        return any(row[pk] == pk_value for _, row in self.scan())
 
     def _find(self, where):
         """[(номер, строка)] всех живых записей, подходящих под условие."""
@@ -101,7 +100,6 @@ class Table:
 
         return [{c: row[c] for c in columns} for _, row in self._find(where)]
 
-    # UPDATE
     def update(self, where, values, update_all=False):
         s = self.schema
         if where is None and not update_all:
@@ -126,7 +124,6 @@ class Table:
             self.storage.write(n, data)
         return len(updates)
 
-    # DELETE
     def delete(self, where, delete_all=False):
         s = self.schema
         if where is None and not delete_all:
